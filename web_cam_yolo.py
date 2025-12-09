@@ -9,6 +9,79 @@ from PIL import Image
 from collections import defaultdict, deque
 import numpy as np
 
+# --- ui & detection config---
+COLOR_BG = (30, 30, 30)
+COLOR_TEXT = (255, 255, 255)
+COLOR_ACCENT = (0, 255, 217)
+COLOR_ALERT = (0, 0, 255)
+COLOR_OK = (0, 255, 0)
+
+def draw_dashboard(frame, active_tracks, track_display, fps):
+    """Draws a professional-looking dashboard overlay on the frame."""
+    h, w = frame.shape[:2]
+    
+    # here is sidebar
+    sidebar_w = 300
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (w - sidebar_w, 0), (w, h), COLOR_BG, -1)
+    alpha = 0.85
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+    
+    # sidebar content
+    x_start = w - sidebar_w + 20
+    y_curr = 50
+    
+    # title
+    cv2.putText(frame, "BEHAVIOR MONITOR", (x_start, y_curr), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_ACCENT, 2)
+    y_curr += 40
+    
+    # sidebar's stars
+    num_students = len(active_tracks)
+    cv2.putText(frame, f"Students Detected: {num_students}", (x_start, y_curr), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_TEXT, 1)
+    y_curr += 30
+    cv2.putText(frame, f"FPS: {fps:.1f}", (x_start, y_curr), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_TEXT, 1)
+    y_curr += 40
+
+    cv2.line(frame, (x_start, y_curr), (w - 20, y_curr), (100, 100, 100), 1)
+    y_curr += 30
+
+    # all active behaviours its detecting
+    cv2.putText(frame, "Active Behaviors:", (x_start, y_curr), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_TEXT, 1)
+    y_curr += 30
+
+    # counter
+    behavior_counts = defaultdict(int)
+    sleeping_students = 0
+    
+    for tid in active_tracks:
+        label_txt, _ = track_display.get(tid, ("Unknown", (0,0,0)))
+        label = label_txt.split(":")[0]
+        behavior_counts[label] += 1
+        if label == "Sleeping":
+            sleeping_students += 1
+
+    for label, count in behavior_counts.items():
+        color = COLOR_OK
+        if label in ["Sleeping", "Turning_Around"]:
+            color = COLOR_ALERT
+        
+        text = f"{label}: {count}"
+        cv2.putText(frame, text, (x_start, y_curr), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
+        y_curr += 25
+
+    # alert if sleeping because funny
+    if sleeping_students > 0:
+        alert_text = "ALERT: SLEEPING"
+        text_size = cv2.getTextSize(alert_text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 3)[0]
+        cv2.rectangle(frame, (50, 50), (50 + text_size[0] + 20, 50 + text_size[1] + 20), (0, 0, 255), -1)
+        cv2.putText(frame, alert_text, (60, 50 + text_size[1] + 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3)
+
 class TemporalMeanNet(nn.Module):
     """Mean-pooling temporal head (older checkpoints)."""
     def __init__(self, backbone_name: str, n_classes: int):
@@ -110,7 +183,7 @@ UNKNOWN_THRESH = float(os.environ.get("BD_UNKNOWN_THRESH", "0.50"))
 UNKNOWN_COLOR = (160, 160, 160)
 class_colors.setdefault(UNKNOWN_LABEL, UNKNOWN_COLOR)
 CLIP_LEN = int(ckpt["clip_len"])
-print(f"✅ Model loaded: {ckpt['model_name']}")
+print(f"Model loaded: {ckpt['model_name']}")
 print(f"Classes: {class_names}")
 print(f"Class colors (BGR): {class_colors}")
 print(f"Clip length: {CLIP_LEN}")
@@ -354,6 +427,8 @@ while True:
             cv2.rectangle(frame, (x1i, y1i), (x2i, y2i), color, 2)
             cv2.putText(frame, f"ID {tid} | {label_txt}", (x1i, max(20, y1i - 8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+
+    draw_dashboard(frame, active_tracks, track_display, fps)
 
     # Show FPS (optional)
     if frame_count == 1:
