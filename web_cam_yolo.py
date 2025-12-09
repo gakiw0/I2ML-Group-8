@@ -73,12 +73,9 @@ class TemporalConvNet(nn.Module):
 # ========== Device & checkpoint ==========
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 script_dir = os.path.dirname(__file__)
-CKPT_FILE = os.environ.get("BD_CKPT_FILE", "weaken_turning_around.pth")
+CKPT_FILE = os.environ.get("BD_CKPT_FILE", "behavior_detection.pth")
 MODEL_PATH = os.path.join(
     script_dir,
-    "..",
-    "models",
-    "convnext_small_in22ft1k",
     CKPT_FILE,
 )
 ckpt = torch.load(MODEL_PATH, map_location=device)
