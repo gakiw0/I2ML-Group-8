@@ -73,12 +73,9 @@ class TemporalConvNet(nn.Module):
 # ========== Device & checkpoint ==========
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 script_dir = os.path.dirname(__file__)
-CKPT_FILE = os.environ.get("BD_CKPT_FILE", "weaken_turning_around.pth")
+CKPT_FILE = os.environ.get("BD_CKPT_FILE", "behavior_detection.pth")
 MODEL_PATH = os.path.join(
     script_dir,
-    "..",
-    "models",
-    "convnext_small_in22ft1k",
     CKPT_FILE,
 )
 ckpt = torch.load(MODEL_PATH, map_location=device)
@@ -108,6 +105,10 @@ def build_class_color_map(names):
 
 
 class_colors = build_class_color_map(class_names)
+UNKNOWN_LABEL = "unknown"
+UNKNOWN_THRESH = float(os.environ.get("BD_UNKNOWN_THRESH", "0.50"))
+UNKNOWN_COLOR = (160, 160, 160)
+class_colors.setdefault(UNKNOWN_LABEL, UNKNOWN_COLOR)
 CLIP_LEN = int(ckpt["clip_len"])
 print(f"✅ Model loaded: {ckpt['model_name']}")
 print(f"Classes: {class_names}")
@@ -309,6 +310,9 @@ while True:
 
                 display_label = pred_label
                 display_conf = pred_conf
+                if pred_conf <= UNKNOWN_THRESH:
+                    display_label = UNKNOWN_LABEL
+
                 label_txt_curr = f"{display_label}: {display_conf:.2f}"
                 color_curr = class_colors.get(display_label, (0, 255, 0))
 
