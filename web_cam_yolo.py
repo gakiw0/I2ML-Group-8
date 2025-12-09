@@ -105,6 +105,10 @@ def build_class_color_map(names):
 
 
 class_colors = build_class_color_map(class_names)
+UNKNOWN_LABEL = "unknown"
+UNKNOWN_THRESH = float(os.environ.get("BD_UNKNOWN_THRESH", "0.50"))
+UNKNOWN_COLOR = (160, 160, 160)
+class_colors.setdefault(UNKNOWN_LABEL, UNKNOWN_COLOR)
 CLIP_LEN = int(ckpt["clip_len"])
 print(f"✅ Model loaded: {ckpt['model_name']}")
 print(f"Classes: {class_names}")
@@ -306,6 +310,9 @@ while True:
 
                 display_label = pred_label
                 display_conf = pred_conf
+                if pred_conf <= UNKNOWN_THRESH:
+                    display_label = UNKNOWN_LABEL
+
                 label_txt_curr = f"{display_label}: {display_conf:.2f}"
                 color_curr = class_colors.get(display_label, (0, 255, 0))
 
