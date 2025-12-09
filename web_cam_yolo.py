@@ -428,6 +428,8 @@ while True:
             cv2.putText(frame, f"ID {tid} | {label_txt}", (x1i, max(20, y1i - 8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
 
+    draw_dashboard(frame, active_tracks, track_display, fps)
+
     # Show FPS (optional)
     if frame_count == 1:
         fh, fw = frame.shape[:2]
