@@ -110,6 +110,7 @@ class BehaviorEngine:
 
     def __init__(self, source=0):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.source_id = source
 
         # --- Load checkpoint ---
         script_dir = os.path.dirname(__file__)
@@ -192,15 +193,8 @@ class BehaviorEngine:
         self.track_display = {}                                          # tid -> (label_txt, color)
 
         # -------- Sleeping histories (frame-based, like original) --------
-        self.sleep_history = defaultdict(lambda: deque())  # tid -> deque[(frame_idx, is_sleep)]
+        self.sleep_history = defaultdict(lambda: deque())  # tid -> deque[(timestamp_sec, is_sleep)]
         self.stable_sleep = {}                             # tid -> bool
-
-        # Approx FPS for sleeping window (same as original: 30 fps)
-        self.fps_est = 30.0
-        self.sleep_window_frames = max(
-            1, int(round(self.fps_est * self.SLEEP_WINDOW_SEC))
-        )
-        print(f"[Engine] Sleep window frames: {self.sleep_window_frames}")
 
         # Capture & frame counter
         self.cap = cv2.VideoCapture(source)
@@ -401,16 +395,15 @@ class BehaviorEngine:
                     if pred_conf <= self.UNKNOWN_THRESH:
                         display_label = self.UNKNOWN_LABEL
 
-                    # ----- Sleeping stabilization (MATCH ORIGINAL CODE) -----
-                    # Original code uses frame_count & sleep_window_frames:
-                    #   - history: (frame_idx, is_sleep)
-                    #   - ratio over last N frames
+                    # ----- Sleeping stabilization (real-time window) -----
+                    # Track (timestamp_sec, is_sleep) over the last SLEEP_WINDOW_SEC.
                     if self.SLEEP_LABEL in self.base_class_names:
                         history = self.sleep_history[tid]
+                        now = time.monotonic()
                         history.append(
-                            (self.frame_count, 1 if pred_label == self.SLEEP_LABEL else 0)
+                            (now, 1 if pred_label == self.SLEEP_LABEL else 0)
                         )
-                        cutoff = self.frame_count - self.sleep_window_frames
+                        cutoff = now - self.SLEEP_WINDOW_SEC
                         while history and history[0][0] < cutoff:
                             history.popleft()
 
@@ -420,7 +413,7 @@ class BehaviorEngine:
                         )
                         window_covered = (
                             len(history) > 1
-                            and (history[-1][0] - history[0][0]) >= self.sleep_window_frames
+                            and (history[-1][0] - history[0][0]) >= self.SLEEP_WINDOW_SEC
                         )
 
                         was_stable = self.stable_sleep.get(tid, False)
