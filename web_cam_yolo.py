@@ -231,21 +231,23 @@ SLEEP_CONFIRM_THRESHOLD = 0.8
 SLEEP_CLEAR_THRESHOLD = 0.5
 
 # ========== Video source ==========
-SOURCE = 2
+SOURCE = 0
 cap = cv2.VideoCapture(SOURCE)
 # cap = cv2.VideoCapture("http://your-ip-camera/video")
 
 # Try to match capture to camera resolution (override via env vars)
-desired_w = int(os.environ.get("BD_CAM_WIDTH", "0"))
-desired_h = int(os.environ.get("BD_CAM_HEIGHT", "0"))
+desired_w, desired_h = 1280, 720
 if desired_w > 0 and desired_h > 0:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, desired_w)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, desired_h)
 actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-fps = cap.get(cv2.CAP_PROP_FPS)
+fps = 30
 if not fps or fps <= 1e-2:
     fps = 30.0
+
+
+
 sleep_window_frames = max(1, int(round(fps * SLEEP_WINDOW_SEC)))
 if actual_w and actual_h:
     print(f"Camera capture resolution: {actual_w}x{actual_h}")
