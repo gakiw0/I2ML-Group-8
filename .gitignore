@@ -19,3 +19,5 @@ __pycache__/
 
 # Processed examples output
 processed_examples/
+
+reports/
