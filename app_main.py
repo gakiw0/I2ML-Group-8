@@ -1,4 +1,5 @@
 # app_main.py
+from __future__ import annotations
 import sys
 import json
 from pathlib import Path
@@ -17,7 +18,7 @@ from matplotlib.figure import Figure
 import cv2
 import numpy as np
 
-from behavior_engine import BehaviorEngine
+from behavior_engine import BehaviorEngine, CameraInfo
 
 
 # =========================
@@ -156,15 +157,16 @@ class MonitorPage(QWidget):
     def populate_cameras(self):
         """Refresh the camera dropdown and select a reasonable default."""
         cameras = self.engine.list_cameras(max_probe=8)
-        current_source = self.engine.source_id
+        current_cam = getattr(self.engine, "current_camera", None)
+        current_token = getattr(self.engine, "source_token", None)
 
         self.camera_combo.blockSignals(True)
         self.camera_combo.clear()
         selected_idx = -1
-        for cam_id, label in cameras:
+        for cam in cameras:
             idx = self.camera_combo.count()
-            self.camera_combo.addItem(label, cam_id)
-            if cam_id == current_source:
+            self.camera_combo.addItem(cam.label, cam)
+            if self._is_same_camera(current_cam, cam) or (current_cam is None and cam.open_token == current_token):
                 selected_idx = idx
         self.camera_combo.blockSignals(False)
 
@@ -184,22 +186,23 @@ class MonitorPage(QWidget):
         self.camera_combo.setCurrentIndex(selected_idx)
         self.camera_combo.blockSignals(False)
 
-        target_id = self.camera_combo.itemData(selected_idx)
-        need_prompt = self.recording and target_id != current_source
-        if self.engine.cap is None or not self.engine.cap.isOpened() or target_id != current_source:
-            self._switch_camera(target_id, prompt_if_recording=need_prompt)
+        target_cam = self.camera_combo.itemData(selected_idx)
+        need_prompt = self.recording and not self._is_same_camera(current_cam, target_cam)
+        if self.engine.cap is None or not self.engine.cap.isOpened() or not self._is_same_camera(current_cam, target_cam):
+            self._switch_camera(target_cam, prompt_if_recording=need_prompt)
         else:
-            self._update_session_info(target_id)
+            self._update_session_info(target_cam)
 
-    def _camera_label_for_id(self, camera_id):
-        for i in range(self.camera_combo.count()):
-            if self.camera_combo.itemData(i) == camera_id:
-                return self.camera_combo.itemText(i)
-        return None
+    def _is_same_camera(self, cam_a: CameraInfo | None, cam_b: CameraInfo | None) -> bool:
+        if cam_a is None or cam_b is None:
+            return False
+        if cam_a.uid and cam_b.uid and cam_a.uid == cam_b.uid:
+            return True
+        return (cam_a.open_token == cam_b.open_token) and (cam_a.backend == cam_b.backend)
 
-    def _set_combo_to_id(self, camera_id):
+    def _set_combo_to_camera(self, camera: CameraInfo | None):
         for i in range(self.camera_combo.count()):
-            if self.camera_combo.itemData(i) == camera_id:
+            if self._is_same_camera(self.camera_combo.itemData(i), camera):
                 self.camera_combo.blockSignals(True)
                 self.camera_combo.setCurrentIndex(i)
                 self.camera_combo.blockSignals(False)
@@ -209,13 +212,13 @@ class MonitorPage(QWidget):
             self.camera_combo.setCurrentIndex(0)
             self.camera_combo.blockSignals(False)
 
-    def _switch_camera(self, camera_id, prompt_if_recording=True):
-        if camera_id is None:
+    def _switch_camera(self, camera: CameraInfo | None, prompt_if_recording=True):
+        if camera is None:
             return False
 
-        previous_id = self.engine.source_id
-        if camera_id == previous_id and self.engine.cap is not None and self.engine.cap.isOpened():
-            self._update_session_info(camera_id)
+        previous_cam = getattr(self.engine, "current_camera", None)
+        if self._is_same_camera(camera, previous_cam) and self.engine.cap is not None and self.engine.cap.isOpened():
+            self._update_session_info(camera)
             return True
 
         if self.recording and prompt_if_recording:
@@ -226,28 +229,28 @@ class MonitorPage(QWidget):
                 QMessageBox.Yes | QMessageBox.No
             )
             if reply == QMessageBox.No:
-                self._set_combo_to_id(previous_id)
+                self._set_combo_to_camera(previous_cam)
                 return False
             self.stop_record_session()
 
-        ok = self.engine.set_source(camera_id)
+        ok = self.engine.set_source(camera)
         if not ok:
-            QMessageBox.warning(self, "Camera Error", f"Could not open camera {camera_id}.")
-            self._set_combo_to_id(previous_id)
+            QMessageBox.warning(self, "Camera Error", f"Could not open camera {camera.label}.")
+            self._set_combo_to_camera(previous_cam)
             return False
 
-        self._update_session_info(camera_id)
+        self._update_session_info(camera)
         return True
 
     def on_camera_selected(self, index):
-        camera_id = self.camera_combo.itemData(index)
-        self._switch_camera(camera_id, prompt_if_recording=True)
+        camera = self.camera_combo.itemData(index)
+        self._switch_camera(camera, prompt_if_recording=True)
 
-    def _update_session_info(self, camera_id=None):
-        if camera_id is None:
-            camera_id = self.engine.source_id if (self.engine.cap and self.engine.cap.isOpened()) else None
-        label = self._camera_label_for_id(camera_id) if camera_id is not None else "None"
-        src_text = label if label else ("Camera " + str(camera_id) if camera_id is not None else "None")
+    def _update_session_info(self, camera: CameraInfo | None = None):
+        cam = camera
+        if cam is None:
+            cam = getattr(self.engine, "current_camera", None)
+        src_text = cam.label if cam is not None else "None"
         self.left_info.setText(f"Session Info:\n- Source: {src_text}\n- Model: Loaded")
 
     def on_back(self):
