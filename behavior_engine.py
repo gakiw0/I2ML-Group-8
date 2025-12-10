@@ -445,6 +445,8 @@ class BehaviorEngine:
                         history.append(
                             (now, 1 if pred_label == self.SLEEP_LABEL else 0)
                         )
+                        # Capture coverage before pruning so we don't shrink the window below the target span.
+                        oldest_before_trim = history[0][0]
                         cutoff = now - self.SLEEP_WINDOW_SEC
                         while history and history[0][0] < cutoff:
                             history.popleft()
@@ -454,8 +456,8 @@ class BehaviorEngine:
                             if history else 0.0
                         )
                         window_covered = (
-                            len(history) > 1
-                            and (history[-1][0] - history[0][0]) >= self.SLEEP_WINDOW_SEC
+                            len(history) >= 2
+                            and (now - oldest_before_trim) >= self.SLEEP_WINDOW_SEC
                         )
 
                         was_stable = self.stable_sleep.get(tid, False)
