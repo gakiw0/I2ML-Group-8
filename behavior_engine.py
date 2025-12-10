@@ -197,7 +197,11 @@ class BehaviorEngine:
         self.stable_sleep = {}                             # tid -> bool
 
         # Capture & frame counter
-        self.cap = cv2.VideoCapture(source)
+        self.cap = self._open_capture(self.source_id)
+        if self.cap is None:
+            print(f"[Engine] Warning: could not open camera source {self.source_id}")
+        self.failed_reads = 0
+        self.failed_read_limit = 5
         self.frame_count = 0
         torch.backends.cudnn.benchmark = True
 
@@ -304,9 +308,18 @@ class BehaviorEngine:
 
         current_stats: {class_name: fraction_of_students}, including "Unknown".
         """
+        if self.cap is None or not self.cap.isOpened():
+            return None
+
         ok, frame = self.cap.read()
         if not ok:
+            self.failed_reads += 1
+            if self.failed_reads >= self.failed_read_limit:
+                print(f"[Engine] Video source {self.source_id} unavailable; releasing capture.")
+                self.cap.release()
+                self.cap = None
             return None
+        self.failed_reads = 0
 
         self.frame_count += 1
 
@@ -482,6 +495,56 @@ class BehaviorEngine:
     # ======================
     # Helpers
     # ======================
+
+    def _open_capture(self, source_id):
+        """Open a capture device and verify it can return a frame."""
+        cap = cv2.VideoCapture(source_id)
+        if not cap.isOpened():
+            cap.release()
+            return None
+        ok, _ = cap.read()
+        if not ok:
+            cap.release()
+            return None
+        return cap
+
+    def set_source(self, new_source_id: int):
+        """
+        Switch to a new camera source. Returns True on success, False if open failed.
+        Keeps the previous capture if the new one cannot be opened.
+        """
+        if new_source_id == self.source_id and self.cap is not None and self.cap.isOpened():
+            return True
+
+        new_cap = self._open_capture(new_source_id)
+        if new_cap is None:
+            return False
+
+        old_cap = self.cap
+        self.cap = new_cap
+        self.source_id = new_source_id
+        self.failed_reads = 0
+        if old_cap is not None:
+            old_cap.release()
+        return True
+
+    def list_cameras(self, max_probe: int = 5):
+        """Probe a small range of device IDs and return [(id, label)]."""
+        cameras = []
+        for idx in range(max_probe):
+            cap = cv2.VideoCapture(idx)
+            if not cap.isOpened():
+                cap.release()
+                continue
+            ok, _ = cap.read()
+            if ok:
+                cameras.append((idx, f"Cam {idx}"))
+            cap.release()
+        return cameras
+
+    def has_video(self):
+        """Return True if the capture is open and healthy."""
+        return self.cap is not None and self.cap.isOpened()
 
     def _pad_and_crop(self, frame, x1, y1, x2, y2, pad=24):
         """

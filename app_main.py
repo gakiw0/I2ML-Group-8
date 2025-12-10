@@ -8,7 +8,7 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QLabel,
     QVBoxLayout, QHBoxLayout, QStackedWidget, QListWidget, QListWidgetItem,
-    QMessageBox, QScrollArea, QCheckBox, QGridLayout
+    QMessageBox, QScrollArea, QCheckBox, QGridLayout, QComboBox
 )
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -83,10 +83,24 @@ class MonitorPage(QWidget):
         # --- Layouts: top (sidebars + video) + bottom bar ---
         main_layout = QVBoxLayout(self)
         top_layout = QHBoxLayout()
+        controls_layout = QHBoxLayout()
         bottom_layout = QHBoxLayout()
 
+        # Camera controls (top-left)
+        self.camera_label = QLabel("Camera:")
+        self.camera_combo = QComboBox()
+        self.camera_combo.setMinimumWidth(160)
+        self.camera_combo.currentIndexChanged.connect(self.on_camera_selected)
+        self.btn_refresh_cameras = QPushButton("Refresh")
+        self.btn_refresh_cameras.clicked.connect(self.populate_cameras)
+
+        controls_layout.addWidget(self.camera_label)
+        controls_layout.addWidget(self.camera_combo)
+        controls_layout.addWidget(self.btn_refresh_cameras)
+        controls_layout.addStretch(1)
+
         # Left sidebar
-        self.left_info = QLabel("Session Info:\n- Source: Webcam\n- Model: Loaded")
+        self.left_info = QLabel("Session Info:\n- Source: None\n- Model: Loaded")
         self.left_info.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.left_info.setMinimumWidth(200)
 
@@ -123,6 +137,7 @@ class MonitorPage(QWidget):
         bottom_layout.addStretch(1)
         bottom_layout.addWidget(self.btn_record)
 
+        main_layout.addLayout(controls_layout)
         main_layout.addLayout(top_layout)
         main_layout.addLayout(bottom_layout)
 
@@ -134,6 +149,106 @@ class MonitorPage(QWidget):
         # Timer for recording time
         self.time_timer = QTimer(self)
         self.time_timer.timeout.connect(self.update_time)
+
+        # Populate camera list once UI elements are ready
+        self.populate_cameras()
+
+    def populate_cameras(self):
+        """Refresh the camera dropdown and select a reasonable default."""
+        cameras = self.engine.list_cameras(max_probe=8)
+        current_source = self.engine.source_id
+
+        self.camera_combo.blockSignals(True)
+        self.camera_combo.clear()
+        selected_idx = -1
+        for cam_id, label in cameras:
+            idx = self.camera_combo.count()
+            self.camera_combo.addItem(label, cam_id)
+            if cam_id == current_source:
+                selected_idx = idx
+        self.camera_combo.blockSignals(False)
+
+        if not cameras:
+            self.btn_record.setEnabled(False)
+            self.video_label.setText("No camera found")
+            self._update_session_info(None)
+            if self.recording:
+                self.stop_record_session()
+            return
+
+        self.btn_record.setEnabled(True)
+        if selected_idx < 0:
+            selected_idx = 0
+
+        self.camera_combo.blockSignals(True)
+        self.camera_combo.setCurrentIndex(selected_idx)
+        self.camera_combo.blockSignals(False)
+
+        target_id = self.camera_combo.itemData(selected_idx)
+        need_prompt = self.recording and target_id != current_source
+        if self.engine.cap is None or not self.engine.cap.isOpened() or target_id != current_source:
+            self._switch_camera(target_id, prompt_if_recording=need_prompt)
+        else:
+            self._update_session_info(target_id)
+
+    def _camera_label_for_id(self, camera_id):
+        for i in range(self.camera_combo.count()):
+            if self.camera_combo.itemData(i) == camera_id:
+                return self.camera_combo.itemText(i)
+        return None
+
+    def _set_combo_to_id(self, camera_id):
+        for i in range(self.camera_combo.count()):
+            if self.camera_combo.itemData(i) == camera_id:
+                self.camera_combo.blockSignals(True)
+                self.camera_combo.setCurrentIndex(i)
+                self.camera_combo.blockSignals(False)
+                return
+        if self.camera_combo.count() > 0:
+            self.camera_combo.blockSignals(True)
+            self.camera_combo.setCurrentIndex(0)
+            self.camera_combo.blockSignals(False)
+
+    def _switch_camera(self, camera_id, prompt_if_recording=True):
+        if camera_id is None:
+            return False
+
+        previous_id = self.engine.source_id
+        if camera_id == previous_id and self.engine.cap is not None and self.engine.cap.isOpened():
+            self._update_session_info(camera_id)
+            return True
+
+        if self.recording and prompt_if_recording:
+            reply = QMessageBox.question(
+                self,
+                "Switch camera?",
+                "Recording is active. Stop recording and switch camera?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                self._set_combo_to_id(previous_id)
+                return False
+            self.stop_record_session()
+
+        ok = self.engine.set_source(camera_id)
+        if not ok:
+            QMessageBox.warning(self, "Camera Error", f"Could not open camera {camera_id}.")
+            self._set_combo_to_id(previous_id)
+            return False
+
+        self._update_session_info(camera_id)
+        return True
+
+    def on_camera_selected(self, index):
+        camera_id = self.camera_combo.itemData(index)
+        self._switch_camera(camera_id, prompt_if_recording=True)
+
+    def _update_session_info(self, camera_id=None):
+        if camera_id is None:
+            camera_id = self.engine.source_id if (self.engine.cap and self.engine.cap.isOpened()) else None
+        label = self._camera_label_for_id(camera_id) if camera_id is not None else "None"
+        src_text = label if label else ("Camera " + str(camera_id) if camera_id is not None else "None")
+        self.left_info.setText(f"Session Info:\n- Source: {src_text}\n- Model: Loaded")
 
     def on_back(self):
         """Handle going back to home (ask if recording is active)."""
@@ -158,6 +273,10 @@ class MonitorPage(QWidget):
 
     def start_record_session(self):
         """Start recording: reset timer and notify engine."""
+        if self.engine.cap is None or not self.engine.cap.isOpened():
+            QMessageBox.warning(self, "Camera Error", "No active camera. Please select a camera.")
+            return
+
         self.engine.start_record()
         self.recording = True
         self.elapsed_sec = 0
@@ -196,6 +315,8 @@ class MonitorPage(QWidget):
         """
         out = self.engine.read_frame()
         if out is None:
+            self.video_label.setText("No video")
+            self.video_label.setPixmap(QPixmap())
             return
         frame, stats, num_people = out
 
@@ -446,7 +567,7 @@ class MainWindow(QMainWindow):
     """
     def __init__(self):
         super().__init__()
-        self.engine = BehaviorEngine(source=0)
+        self.engine = BehaviorEngine(source=3)
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
