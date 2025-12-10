@@ -1,6 +1,8 @@
 # behavior_engine.py
 import os
+import sys
 import time
+import subprocess
 from collections import defaultdict, deque
 from pathlib import Path
 
@@ -196,10 +198,8 @@ class BehaviorEngine:
         self.sleep_history = defaultdict(lambda: deque())  # tid -> deque[(timestamp_sec, is_sleep)]
         self.stable_sleep = {}                             # tid -> bool
 
-        # Capture & frame counter
-        self.cap = self._open_capture(self.source_id)
-        if self.cap is None:
-            print(f"[Engine] Warning: could not open camera source {self.source_id}")
+        # Capture & frame counter (lazy-open; do not grab camera until requested)
+        self.cap = None
         self.failed_reads = 0
         self.failed_read_limit = 5
         self.frame_count = 0
@@ -530,6 +530,7 @@ class BehaviorEngine:
 
     def list_cameras(self, max_probe: int = 5):
         """Probe a small range of device IDs and return [(id, label)]."""
+        friendly_names = self._probe_camera_names_wmi()
         cameras = []
         for idx in range(max_probe):
             cap = cv2.VideoCapture(idx)
@@ -538,9 +539,40 @@ class BehaviorEngine:
                 continue
             ok, _ = cap.read()
             if ok:
-                cameras.append((idx, f"Cam {idx}"))
+                label = friendly_names[idx] if idx < len(friendly_names) else f"Cam {idx}"
+                cameras.append((idx, label))
             cap.release()
         return cameras
+
+    def _probe_camera_names_wmi(self):
+        """
+        Best-effort friendly camera names on Windows via PowerShell/WMI.
+        Falls back to empty list if not available.
+        """
+        if not sys.platform.startswith("win"):
+            return []
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$ErrorActionPreference='SilentlyContinue'; "
+            "Get-CimInstance Win32_PnPEntity | "
+            "Where-Object { $_.PNPClass -eq 'Camera' } | "
+            "Select-Object -ExpandProperty Name"
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                return []
+            lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+            return lines
+        except Exception:
+            return []
 
     def has_video(self):
         """Return True if the capture is open and healthy."""
