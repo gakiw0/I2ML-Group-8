@@ -141,16 +141,17 @@ class MonitorPage(QWidget):
         main_layout.addLayout(top_layout)
         main_layout.addLayout(bottom_layout)
 
-        # Timer for video frames (started on monitor show)
+        # Timer for video frames
         self.frame_timer = QTimer(self)
         self.frame_timer.timeout.connect(self.update_frame)
+        self.frame_timer.start(30)  # ~30 fps
 
         # Timer for recording time
         self.time_timer = QTimer(self)
         self.time_timer.timeout.connect(self.update_time)
 
-        # Populate camera list when monitor page is shown (lazy)
-        self.populated_once = False
+        # Populate camera list once UI elements are ready
+        self.populate_cameras()
 
     def populate_cameras(self):
         """Refresh the camera dropdown and select a reasonable default."""
@@ -549,22 +550,6 @@ class ReportsPage(QWidget):
 
         line.set_visible(checkbox.isChecked())
         self.canvas.draw_idle()
-
-    def showEvent(self, event):
-        """Start frame timer and populate cameras when entering monitor page."""
-        super().showEvent(event)
-        if not self.populated_once:
-            self.populate_cameras()
-            self.populated_once = True
-        if not self.frame_timer.isActive():
-            self.frame_timer.start(30)
-
-    def hideEvent(self, event):
-        """Stop frame timer when leaving monitor page."""
-        if self.frame_timer.isActive():
-            self.frame_timer.stop()
-        super().hideEvent(event)
-
 
 # =========================
 # Main Window

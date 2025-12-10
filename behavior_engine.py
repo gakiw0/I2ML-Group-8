@@ -198,8 +198,10 @@ class BehaviorEngine:
         self.sleep_history = defaultdict(lambda: deque())  # tid -> deque[(timestamp_sec, is_sleep)]
         self.stable_sleep = {}                             # tid -> bool
 
-        # Capture & frame counter (lazy-open; do not grab camera until requested)
-        self.cap = None
+        # Capture & frame counter
+        self.cap = self._open_capture(self.source_id)
+        if self.cap is None:
+            print(f"[Engine] Warning: could not open camera source {self.source_id}")
         self.failed_reads = 0
         self.failed_read_limit = 5
         self.frame_count = 0
