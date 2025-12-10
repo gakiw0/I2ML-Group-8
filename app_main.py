@@ -145,14 +145,24 @@ class MonitorPage(QWidget):
         # Timer for video frames
         self.frame_timer = QTimer(self)
         self.frame_timer.timeout.connect(self.update_frame)
-        self.frame_timer.start(30)  # ~30 fps
 
         # Timer for recording time
         self.time_timer = QTimer(self)
         self.time_timer.timeout.connect(self.update_time)
 
-        # Populate camera list once UI elements are ready
+        # Camera list will be populated lazily when the monitor page is shown
+        self.frame_interval_ms = 30
+
+    def on_enter(self):
+        """Called when the Monitor page becomes visible (Start button)."""
+        if not self.frame_timer.isActive():
+            self.frame_timer.start(self.frame_interval_ms)
         self.populate_cameras()
+
+    def pause_camera_updates(self):
+        """Stop frame timer when leaving the monitor page."""
+        if self.frame_timer.isActive():
+            self.frame_timer.stop()
 
     def populate_cameras(self):
         """Refresh the camera dropdown and select a reasonable default."""
@@ -569,7 +579,7 @@ class MainWindow(QMainWindow):
     """
     def __init__(self):
         super().__init__()
-        self.engine = BehaviorEngine(source=3)
+        self.engine = BehaviorEngine(source=3, auto_open=False)
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -587,12 +597,15 @@ class MainWindow(QMainWindow):
         self.resize(1280, 720)
 
     def show_home(self):
+        self.monitor_page.pause_camera_updates()
         self.stack.setCurrentWidget(self.home_page)
 
     def show_monitor(self):
+        self.monitor_page.on_enter()
         self.stack.setCurrentWidget(self.monitor_page)
 
     def show_reports(self):
+        self.monitor_page.pause_camera_updates()
         self.stack.setCurrentWidget(self.reports_page)
 
     def closeEvent(self, event):

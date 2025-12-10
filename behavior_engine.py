@@ -123,12 +123,13 @@ class BehaviorEngine:
       - list_sessions()
     """
 
-    def __init__(self, source=0):
+    def __init__(self, source=0, auto_open=True):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.source_token = source  # can be int index or backend-specific string
         self.source_id = source if isinstance(source, int) else None
         self.current_camera: CameraInfo | None = None
         self.camera_catalog: list[CameraInfo] = []
+        self.cap = None  # lazily opened; set when auto_open is True or when set_source is called
 
         # --- Load checkpoint ---
         script_dir = os.path.dirname(__file__)
@@ -214,19 +215,20 @@ class BehaviorEngine:
         self.sleep_history = defaultdict(lambda: deque())  # tid -> deque[(timestamp_sec, is_sleep)]
         self.stable_sleep = {}                             # tid -> bool
 
-        # Capture & frame counter
-        self.cap = self._open_capture(self.source_token)
-        if self.cap is None:
-            print(f"[Engine] Warning: could not open camera source {self.source_token}")
-        elif self.current_camera is None:
-            self.current_camera = CameraInfo(
-                label=f"Cam {self.source_token}",
-                open_token=self.source_token,
-                backend=None,
-                device_id=self.source_id if isinstance(self.source_token, int) else None,
-                uid=f"initial:{self.source_token}",
-                raw_label=str(self.source_token),
-            )
+        # Capture & frame counter (optionally lazy-open)
+        if auto_open:
+            self.cap = self._open_capture(self.source_token)
+            if self.cap is None:
+                print(f"[Engine] Warning: could not open camera source {self.source_token}")
+            elif self.current_camera is None:
+                self.current_camera = CameraInfo(
+                    label=f"Cam {self.source_token}",
+                    open_token=self.source_token,
+                    backend=None,
+                    device_id=self.source_id if isinstance(self.source_token, int) else None,
+                    uid=f"initial:{self.source_token}",
+                    raw_label=str(self.source_token),
+                )
         self.failed_reads = 0
         self.failed_read_limit = 5
         self.frame_count = 0
