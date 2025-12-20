@@ -1,8 +1,12 @@
 # behavior_engine.py
+from __future__ import annotations
 import os
+import sys
 import time
+import subprocess
 from collections import defaultdict, deque
 from pathlib import Path
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -14,6 +18,17 @@ from torchvision import transforms
 from ultralytics import YOLO
 import json
 import colorsys
+
+
+@dataclass
+class CameraInfo:
+    """Represents one camera option (label + how to open it)."""
+    label: str
+    open_token: object
+    backend: int | None = None
+    device_id: int | None = None
+    uid: str | None = None        # stable identifier across refreshes
+    raw_label: str | None = None  # original name before deduping
 
 
 # =========================
@@ -108,8 +123,17 @@ class BehaviorEngine:
       - list_sessions()
     """
 
-    def __init__(self, source=0):
+    def __init__(self, source=0, auto_open=True, target_fps: int = 15):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.source_token = source  # can be int index or backend-specific string
+        self.source_id = source if isinstance(source, int) else None
+        self.current_camera: CameraInfo | None = None
+        self.camera_catalog: list[CameraInfo] = []
+        self.cap = None  # lazily opened; set when auto_open is True or when set_source is called
+        self.target_fps = max(1, int(target_fps))
+        self.min_frame_interval = 1.0 / float(self.target_fps)
+        self.last_frame_time = 0.0
+        self.last_frame_output = None
 
         # --- Load checkpoint ---
         script_dir = os.path.dirname(__file__)
@@ -192,18 +216,25 @@ class BehaviorEngine:
         self.track_display = {}                                          # tid -> (label_txt, color)
 
         # -------- Sleeping histories (frame-based, like original) --------
-        self.sleep_history = defaultdict(lambda: deque())  # tid -> deque[(frame_idx, is_sleep)]
+        self.sleep_history = defaultdict(lambda: deque())  # tid -> deque[(timestamp_sec, is_sleep)]
         self.stable_sleep = {}                             # tid -> bool
 
-        # Approx FPS for sleeping window (same as original: 30 fps)
-        self.fps_est = 30.0
-        self.sleep_window_frames = max(
-            1, int(round(self.fps_est * self.SLEEP_WINDOW_SEC))
-        )
-        print(f"[Engine] Sleep window frames: {self.sleep_window_frames}")
-
-        # Capture & frame counter
-        self.cap = cv2.VideoCapture(source)
+        # Capture & frame counter (optionally lazy-open)
+        if auto_open:
+            self.cap = self._open_capture(self.source_token)
+            if self.cap is None:
+                print(f"[Engine] Warning: could not open camera source {self.source_token}")
+            elif self.current_camera is None:
+                self.current_camera = CameraInfo(
+                    label=f"Cam {self.source_token}",
+                    open_token=self.source_token,
+                    backend=None,
+                    device_id=self.source_id if isinstance(self.source_token, int) else None,
+                    uid=f"initial:{self.source_token}",
+                    raw_label=str(self.source_token),
+                )
+        self.failed_reads = 0
+        self.failed_read_limit = 5
         self.frame_count = 0
         torch.backends.cudnn.benchmark = True
 
@@ -310,9 +341,22 @@ class BehaviorEngine:
 
         current_stats: {class_name: fraction_of_students}, including "Unknown".
         """
+        if self.cap is None or not self.cap.isOpened():
+            return None
+
+        now = time.monotonic()
+        if (now - self.last_frame_time) < self.min_frame_interval and self.last_frame_output is not None:
+            return self.last_frame_output
+
         ok, frame = self.cap.read()
         if not ok:
+            self.failed_reads += 1
+            if self.failed_reads >= self.failed_read_limit:
+                print(f"[Engine] Video source {self.source_token} unavailable; releasing capture.")
+                self.cap.release()
+                self.cap = None
             return None
+        self.failed_reads = 0
 
         self.frame_count += 1
 
@@ -401,16 +445,17 @@ class BehaviorEngine:
                     if pred_conf <= self.UNKNOWN_THRESH:
                         display_label = self.UNKNOWN_LABEL
 
-                    # ----- Sleeping stabilization (MATCH ORIGINAL CODE) -----
-                    # Original code uses frame_count & sleep_window_frames:
-                    #   - history: (frame_idx, is_sleep)
-                    #   - ratio over last N frames
+                    # ----- Sleeping stabilization (real-time window) -----
+                    # Track (timestamp_sec, is_sleep) over the last SLEEP_WINDOW_SEC.
                     if self.SLEEP_LABEL in self.base_class_names:
                         history = self.sleep_history[tid]
+                        now = time.monotonic()
                         history.append(
-                            (self.frame_count, 1 if pred_label == self.SLEEP_LABEL else 0)
+                            (now, 1 if pred_label == self.SLEEP_LABEL else 0)
                         )
-                        cutoff = self.frame_count - self.sleep_window_frames
+                        # Capture coverage before pruning so we don't shrink the window below the target span.
+                        oldest_before_trim = history[0][0]
+                        cutoff = now - self.SLEEP_WINDOW_SEC
                         while history and history[0][0] < cutoff:
                             history.popleft()
 
@@ -419,8 +464,8 @@ class BehaviorEngine:
                             if history else 0.0
                         )
                         window_covered = (
-                            len(history) > 1
-                            and (history[-1][0] - history[0][0]) >= self.sleep_window_frames
+                            len(history) >= 2
+                            and (now - oldest_before_trim) >= self.SLEEP_WINDOW_SEC
                         )
 
                         was_stable = self.stable_sleep.get(tid, False)
@@ -484,11 +529,255 @@ class BehaviorEngine:
         # Snapshot for report (every 5 seconds)
         self._log_snapshot(time.time(), current_stats)
 
-        return frame, current_stats, people_this_frame
+        self.last_frame_time = time.monotonic()
+        self.last_frame_output = (frame, current_stats, people_this_frame)
+        return self.last_frame_output
 
     # ======================
     # Helpers
     # ======================
+
+    def _open_capture(self, source, backend=None):
+        """
+        Open a capture device and verify it can return a frame.
+        `source` can be a CameraInfo or a raw token (int or string).
+        """
+        token = source
+        backend_arg = backend
+        if isinstance(source, CameraInfo):
+            token = source.open_token
+            backend_arg = source.backend if backend is None else backend
+
+        cap = cv2.VideoCapture(token, backend_arg) if backend_arg is not None else cv2.VideoCapture(token)
+        if not cap.isOpened():
+            cap.release()
+            return None
+        self._apply_target_fps(cap)
+        ok, _ = cap.read()
+        if not ok:
+            cap.release()
+            return None
+        return cap
+
+    def set_source(self, new_source):
+        """
+        Switch to a new camera source. Returns True on success, False if open failed.
+        Keeps the previous capture if the new one cannot be opened.
+        """
+        if isinstance(new_source, CameraInfo):
+            target_cam = new_source
+        else:
+            target_cam = CameraInfo(
+                label=f"Cam {new_source}",
+                open_token=new_source,
+                backend=None,
+                device_id=new_source if isinstance(new_source, int) else None,
+                uid=f"manual:{new_source}",
+                raw_label=str(new_source),
+            )
+
+        if (
+            self.cap is not None
+            and self.cap.isOpened()
+            and self.source_token == target_cam.open_token
+        ):
+            self.current_camera = target_cam
+            self.source_id = target_cam.device_id if target_cam.device_id is not None else (
+                target_cam.open_token if isinstance(target_cam.open_token, int) else None
+            )
+            return True
+
+        new_cap = self._open_capture(target_cam)
+        if new_cap is None:
+            return False
+
+        old_cap = self.cap
+        self.cap = new_cap
+        self.source_token = target_cam.open_token
+        self.source_id = target_cam.device_id if target_cam.device_id is not None else (
+            target_cam.open_token if isinstance(target_cam.open_token, int) else None
+        )
+        self.current_camera = target_cam
+        self.failed_reads = 0
+        self.last_frame_output = None
+        self.last_frame_time = 0.0
+        if old_cap is not None:
+            old_cap.release()
+        return True
+
+    def set_target_fps(self, fps: int):
+        """Update desired FPS and apply to current capture."""
+        self.target_fps = max(1, int(fps))
+        self.min_frame_interval = 1.0 / float(self.target_fps)
+        if self.cap is not None and self.cap.isOpened():
+            self._apply_target_fps(self.cap)
+
+    def _apply_target_fps(self, cap):
+        """Best-effort apply target FPS to the capture device."""
+        try:
+            cap.set(cv2.CAP_PROP_FPS, float(self.target_fps))
+        except Exception:
+            pass
+
+    def list_cameras(self, max_probe: int = 5):
+        """Probe available cameras and return a list of CameraInfo."""
+        cameras: list[CameraInfo] = []
+
+        # Prefer DirectShow names on Windows (order tends to match UI devices)
+        if sys.platform.startswith("win"):
+            cameras = self._probe_cameras_dshow()
+
+        # Fallback to numeric probing
+        if not cameras:
+            cameras = self._probe_cameras_index(max_probe)
+
+        self.camera_catalog = cameras
+        # Refresh current_camera reference to the matching catalog entry if possible
+        for cam in cameras:
+            if cam.open_token == self.source_token or (self.current_camera and cam.uid and cam.uid == self.current_camera.uid):
+                self.current_camera = cam
+                break
+        return cameras
+
+    def _probe_cameras_dshow(self):
+        """
+        Enumerate DirectShow devices via ffmpeg (if available) to get user-visible names.
+        Returns only cameras that successfully open with CAP_DSHOW.
+        """
+        cmd = ["ffmpeg", "-list_devices", "true", "-f", "dshow", "-i", "dummy"]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except FileNotFoundError:
+            return []
+        except Exception:
+            return []
+
+        output = (result.stderr or "") + "\n" + (result.stdout or "")
+
+        entries = []
+        seen_devices_block = False
+        current = None
+        for line in output.splitlines():
+            if "DirectShow video devices" in line:
+                seen_devices_block = True
+                continue
+            if not seen_devices_block:
+                continue
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith("\""):
+                # New device line:  "Device Name"
+                name = text.strip().strip("\"")
+                current = {"name": name, "alts": []}
+                entries.append(current)
+                continue
+            if current is not None and ("Alternative name" in text or "@device" in text):
+                # Alternative id line: Alternative name "@device_pnp_..."
+                alt = None
+                if "\"" in text:
+                    try:
+                        alt = text.split("\"")[1]
+                    except Exception:
+                        alt = None
+                if alt is None:
+                    alt = text.replace("Alternative name", "").strip().strip("\"")
+                if alt:
+                    current["alts"].append(alt)
+
+        if not entries:
+            return []
+
+        # Deduplicate names by appending suffix and prefer alt token when available.
+        name_counts = {}
+        cameras: list[CameraInfo] = []
+        for idx, entry in enumerate(entries):
+            base_name = entry["name"]
+            name_counts.setdefault(base_name, 0)
+            suffix_idx = name_counts[base_name]
+            name_counts[base_name] += 1
+
+            display_label = base_name if suffix_idx == 0 else f"{base_name} ({suffix_idx + 1})"
+            alt_token = entry["alts"][0] if entry["alts"] else None
+
+            # If we have duplicate names but no alt token, skip extra copies to avoid ghost duplicates.
+            if suffix_idx > 0 and not alt_token:
+                continue
+
+            open_token = f"video={alt_token or base_name}"
+            cam = CameraInfo(
+                label=display_label,
+                open_token=open_token,
+                backend=cv2.CAP_DSHOW,
+                device_id=None,
+                uid=f"dshow:{idx}:{base_name}:{suffix_idx}",
+                raw_label=base_name,
+            )
+            cap = self._open_capture(cam)
+            if cap is not None:
+                cap.release()
+                cameras.append(cam)
+        return cameras
+
+    def _probe_cameras_index(self, max_probe: int):
+        """Fallback: probe numeric device IDs and label with best-effort friendly names."""
+        friendly_names = self._probe_camera_names_wmi()
+        limit = min(max_probe, len(friendly_names)) if friendly_names else max_probe
+        cameras: list[CameraInfo] = []
+        for idx in range(limit):
+            label = friendly_names[idx] if idx < len(friendly_names) else f"Cam {idx}"
+            cam = CameraInfo(
+                label=label,
+                open_token=idx,
+                backend=None,
+                device_id=idx,
+                uid=f"index:{idx}",
+                raw_label=label,
+            )
+            cap = self._open_capture(cam)
+            if cap is not None:
+                cap.release()
+                cameras.append(cam)
+        return cameras
+
+    def _probe_camera_names_wmi(self):
+        """
+        Best-effort friendly camera names on Windows via PowerShell/WMI.
+        Falls back to empty list if not available.
+        """
+        if not sys.platform.startswith("win"):
+            return []
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$ErrorActionPreference='SilentlyContinue'; "
+            "Get-CimInstance Win32_PnPEntity | "
+            "Where-Object { $_.PNPClass -eq 'Camera' } | "
+            "Select-Object -ExpandProperty Name"
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                return []
+            lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+            return lines
+        except Exception:
+            return []
+
+    def has_video(self):
+        """Return True if the capture is open and healthy."""
+        return self.cap is not None and self.cap.isOpened()
 
     def _pad_and_crop(self, frame, x1, y1, x2, y2, pad=24):
         """
