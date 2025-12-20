@@ -77,7 +77,6 @@ The checkpoint is expected to be located next to `behavior_engine.py` (same dire
 - `app_main.py` — PyQt5 GUI (Home / Monitor / Reports)
 - `behavior_engine.py` — core logic (camera, YOLO, behavior model, smoothing, recording)
 - `behavior_detection.ipynb` — training / experimentation notebook (behavior classifier)
-- `history/NOTEBOOK_EVOLUTION.md` — summary of training iterations
 - `behavior_detection.pth` — trained behavior checkpoint used by the app
 - `yolov8n.pt` — YOLOv8 weights for person detection
 - `reports/` — recorded session JSON files
