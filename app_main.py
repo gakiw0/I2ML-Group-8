@@ -80,6 +80,7 @@ class MonitorPage(QWidget):
 
         self.recording = False
         self.elapsed_sec = 0
+        self.current_fps = max(1, getattr(self.engine, "target_fps", 15))
 
         # --- Layouts: top (sidebars + video) + bottom bar ---
         main_layout = QVBoxLayout(self)
@@ -95,9 +96,23 @@ class MonitorPage(QWidget):
         self.btn_refresh_cameras = QPushButton("Refresh")
         self.btn_refresh_cameras.clicked.connect(self.populate_cameras)
 
+        self.fps_label = QLabel("FPS:")
+        self.fps_combo = QComboBox()
+        self.fps_combo.setMinimumWidth(90)
+        self.fps_options = [8, 10, 15, 20, 30, 60]
+        for fps in self.fps_options:
+            self.fps_combo.addItem(f"{fps} fps", fps)
+        initial_fps = self._choose_initial_fps(self.current_fps)
+        self.current_fps = initial_fps
+        self.fps_combo.setCurrentIndex(self.fps_options.index(initial_fps))
+        self.fps_combo.currentIndexChanged.connect(self.on_fps_selected)
+
         controls_layout.addWidget(self.camera_label)
         controls_layout.addWidget(self.camera_combo)
         controls_layout.addWidget(self.btn_refresh_cameras)
+        controls_layout.addSpacing(12)
+        controls_layout.addWidget(self.fps_label)
+        controls_layout.addWidget(self.fps_combo)
         controls_layout.addStretch(1)
 
         # Left sidebar
@@ -151,12 +166,12 @@ class MonitorPage(QWidget):
         self.time_timer.timeout.connect(self.update_time)
 
         # Camera list will be populated lazily when the monitor page is shown
-        self.frame_interval_ms = 30
+        self._apply_fps_setting(self.current_fps)
 
     def on_enter(self):
         """Called when the Monitor page becomes visible (Start button)."""
         if not self.frame_timer.isActive():
-            self.frame_timer.start(self.frame_interval_ms)
+            self.frame_timer.start()
         self.populate_cameras()
 
     def pause_camera_updates(self):
@@ -222,6 +237,31 @@ class MonitorPage(QWidget):
             self.camera_combo.setCurrentIndex(0)
             self.camera_combo.blockSignals(False)
 
+    def _choose_initial_fps(self, desired_fps: int) -> int:
+        if desired_fps in self.fps_options:
+            return desired_fps
+        # fallback: choose closest higher option, else highest available
+        for opt in self.fps_options:
+            if opt >= desired_fps:
+                return opt
+        return self.fps_options[-1]
+
+    def _fps_to_interval_ms(self, fps: int) -> int:
+        return max(1, int(1000 / max(1, fps)))
+
+    def on_fps_selected(self, index):
+        fps = self.fps_combo.itemData(index)
+        if fps is None:
+            return
+        self._apply_fps_setting(int(fps))
+
+    def _apply_fps_setting(self, fps: int):
+        self.current_fps = max(1, int(fps))
+        self.frame_timer.setInterval(self._fps_to_interval_ms(self.current_fps))
+        if hasattr(self.engine, "set_target_fps"):
+            self.engine.set_target_fps(self.current_fps)
+        self._update_session_info()
+
     def _switch_camera(self, camera: CameraInfo | None, prompt_if_recording=True):
         if camera is None:
             return False
@@ -261,7 +301,9 @@ class MonitorPage(QWidget):
         if cam is None:
             cam = getattr(self.engine, "current_camera", None)
         src_text = cam.label if cam is not None else "None"
-        self.left_info.setText(f"Session Info:\n- Source: {src_text}\n- Model: Loaded")
+        self.left_info.setText(
+            f"Session Info:\n- Source: {src_text}\n- FPS: {self.current_fps}\n- Model: Loaded"
+        )
 
     def on_back(self):
         """Handle going back to home (ask if recording is active)."""

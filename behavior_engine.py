@@ -123,13 +123,17 @@ class BehaviorEngine:
       - list_sessions()
     """
 
-    def __init__(self, source=0, auto_open=True):
+    def __init__(self, source=0, auto_open=True, target_fps: int = 15):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.source_token = source  # can be int index or backend-specific string
         self.source_id = source if isinstance(source, int) else None
         self.current_camera: CameraInfo | None = None
         self.camera_catalog: list[CameraInfo] = []
         self.cap = None  # lazily opened; set when auto_open is True or when set_source is called
+        self.target_fps = max(1, int(target_fps))
+        self.min_frame_interval = 1.0 / float(self.target_fps)
+        self.last_frame_time = 0.0
+        self.last_frame_output = None
 
         # --- Load checkpoint ---
         script_dir = os.path.dirname(__file__)
@@ -340,6 +344,10 @@ class BehaviorEngine:
         if self.cap is None or not self.cap.isOpened():
             return None
 
+        now = time.monotonic()
+        if (now - self.last_frame_time) < self.min_frame_interval and self.last_frame_output is not None:
+            return self.last_frame_output
+
         ok, frame = self.cap.read()
         if not ok:
             self.failed_reads += 1
@@ -521,7 +529,9 @@ class BehaviorEngine:
         # Snapshot for report (every 5 seconds)
         self._log_snapshot(time.time(), current_stats)
 
-        return frame, current_stats, people_this_frame
+        self.last_frame_time = time.monotonic()
+        self.last_frame_output = (frame, current_stats, people_this_frame)
+        return self.last_frame_output
 
     # ======================
     # Helpers
@@ -542,6 +552,7 @@ class BehaviorEngine:
         if not cap.isOpened():
             cap.release()
             return None
+        self._apply_target_fps(cap)
         ok, _ = cap.read()
         if not ok:
             cap.release()
@@ -588,9 +599,25 @@ class BehaviorEngine:
         )
         self.current_camera = target_cam
         self.failed_reads = 0
+        self.last_frame_output = None
+        self.last_frame_time = 0.0
         if old_cap is not None:
             old_cap.release()
         return True
+
+    def set_target_fps(self, fps: int):
+        """Update desired FPS and apply to current capture."""
+        self.target_fps = max(1, int(fps))
+        self.min_frame_interval = 1.0 / float(self.target_fps)
+        if self.cap is not None and self.cap.isOpened():
+            self._apply_target_fps(self.cap)
+
+    def _apply_target_fps(self, cap):
+        """Best-effort apply target FPS to the capture device."""
+        try:
+            cap.set(cv2.CAP_PROP_FPS, float(self.target_fps))
+        except Exception:
+            pass
 
     def list_cameras(self, max_probe: int = 5):
         """Probe available cameras and return a list of CameraInfo."""
