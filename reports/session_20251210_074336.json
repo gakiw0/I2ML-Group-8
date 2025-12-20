@@ -1,0 +1,53 @@
+{
+  "duration_sec": 10.282829523086548,
+  "per_5sec": [
+    {
+      "window": 0,
+      "start_sec": 0,
+      "dist": {
+        "Looking_Forward": 1.0,
+        "Raising_Hand": 0.0,
+        "Reading": 0.0,
+        "Sleeping": 0.0,
+        "Turning_Around": 0.0,
+        "Writing": 0.0,
+        "Unknown": 0.0
+      }
+    },
+    {
+      "window": 1,
+      "start_sec": 5,
+      "dist": {
+        "Looking_Forward": 1.0,
+        "Raising_Hand": 0.0,
+        "Reading": 0.0,
+        "Sleeping": 0.0,
+        "Turning_Around": 0.0,
+        "Writing": 0.0,
+        "Unknown": 0.0
+      }
+    },
+    {
+      "window": 2,
+      "start_sec": 10,
+      "dist": {
+        "Looking_Forward": 0.0,
+        "Raising_Hand": 0.0,
+        "Reading": 0.0,
+        "Sleeping": 0.0,
+        "Turning_Around": 1.0,
+        "Writing": 0.0,
+        "Unknown": 0.0
+      }
+    }
+  ],
+  "class_names": [
+    "Looking_Forward",
+    "Raising_Hand",
+    "Reading",
+    "Sleeping",
+    "Turning_Around",
+    "Writing",
+    "Unknown"
+  ]
+}

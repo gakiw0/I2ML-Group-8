@@ -1,0 +1,25 @@
+behavior_detection.pth
+yolov8n.pt
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Processed examples output
+processed_examples/
+
+reports/
+
+history/
