@@ -1,0 +1,308 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\begin{document}
+
+\title{Real-Time Student Behavior Recognition in Classrooms Using Temporal ConvNeXt}
+
+\author{
+  \IEEEauthorblockN{Catherine Tao}
+  \IEEEauthorblockA{
+    \textit{Dept. of Computer Science} \\
+    \textit{University of Waterloo}\\
+    Waterloo, Canada
+  }
+  \vspace{0.8em} \\
+  \IEEEauthorblockN{Kelvin Claudio}
+  \IEEEauthorblockA{
+    \textit{Dept. of EECS} \\
+    \textit{National Tsing-Hua University}\\
+    Hsinchu, Taiwan
+  }
+  \and
+  \IEEEauthorblockN{Emma Prufer}
+  \IEEEauthorblockA{
+    \textit{Dept. of Computer Science} \\
+    \textit{Technical University of Dresden}\\
+    Dresden, Germany
+  }
+  \vspace{0.8em} \\ 
+  \IEEEauthorblockN{Laura Shion}
+  \IEEEauthorblockA{
+    \textit{Dept. of EECS} \\
+    \textit{National Tsing-Hua University}\\
+    Hsinchu, Taiwan
+  }
+  \and
+  \IEEEauthorblockN{Gladys Valerie}
+  \IEEEauthorblockA{
+    \textit{Dept. of EECS} \\
+    \textit{National Tsing-Hua University}\\
+    Hsinchu, Taiwan
+  }
+  \vspace{0.8em} \\
+  \IEEEauthorblockN{Ryosei Inagaki}
+  \IEEEauthorblockA{
+    \textit{Dept. of EECS} \\
+    \textit{National Tsing-Hua University}\\
+    Hsinchu, Taiwan
+  }
+}
+
+\maketitle
+
+\begin{abstract}
+Recent classroom analytics increasingly rely on computer vision to understand student behavior automatically. We develop a video-based system for real-time recognition of individual student behaviors in classroom settings. Building on the Classroom Student Behaviors datasets~\cite{csb,csb2}, we reformulate the task from single-frame classification to sequence-level prediction and train a temporal convolutional network based on ConvNeXt. Our model takes short clips of student video as input and predicts one of six behaviors: \textit{looking forward, raising hand, reading, sleeping, turning around}, or \textit{writing}. To improve robustness, we use strong spatial data augmentation, a ``webcam-style'' validation pipeline, class-imbalance-aware sampling and loss weighting, and both global Mixup and a local CutMix strategy focused on the hand and desk region. On a held-out test set, the model reaches 96\% sequence-level accuracy and a macro-averaged F1 score of 0.96, with almost perfect recall for fine-grained behaviors such as writing. These results suggest that temporal ConvNeXt models with deployment-oriented training can provide reliable behavior predictions for real-time classroom tools.
+\end{abstract}
+
+\section{Introduction}
+
+Research on classroom behavior has become increasingly popular, especially for physical actions related to learning engagement~\cite{liu2025classroomreview}. Monitoring how students behave in class is important but manual observation is time-consuming and subjective. With the rise of online learning and camera-equipped classrooms, it is now realistic to use computer vision to recognize student behaviors directly from video streams.
+
+In this project we build a system that recognizes student behavior in real time from short clips of classroom video. Using the Classroom Student Behaviors datasets~\cite{csb,csb2}, we reformulate the original image classification task as sequence-level prediction. Each input is a short clip of a student, and the model predicts one of six behaviors: \textit{looking forward, raising hand, reading, sleeping, turning around}, or \textit{writing}. We focus on sequence-level modeling because behaviors such as reading and writing are hard to distinguish from a single static frame. To make the model robust to real deployment, we explicitly optimize for a webcam-like validation view and combine several regularization and rebalancing techniques.
+
+The main objective of this project is to design and evaluate a robust, real-time model for single-student behavior recognition in classroom videos.
+
+\section{Previous Works}
+
+\subsection{Classroom Behaviour and Attention Recognition}
+
+Liu et al.\ review classroom behavior recognition using computer vision and emphasize body posture and physical actions as proxies for engagement~\cite{liu2025classroomreview}. Wang et al.\ use YOLOv5 to detect multiple students and classify behaviors such as listening, reading, and using a mobile phone~\cite{wang2023yolov5classroom}. Zheng et al.\ map behavior sequences to concentration levels and aggregate them into attention scores over time~\cite{zheng2022attention}. In contrast, we focus on single-student crops and use their predicted behaviors to construct per-student attention curves.
+
+\subsection{Video-Based Deep Learning for Human Behavior}
+
+Human action recognition commonly uses 3D CNNs, 2D CNNs with temporal aggregation, or transformer-based models. Educational applications often operate directly on RGB frames, while other work uses pose/keypoint features (e.g., MediaPipe) as input. Our proposal originally considered both RGB and keypoint pipelines, but in this report we focus on a ConvNeXt backbone with temporal 1D convolutions and leave a detailed comparison with pose-based models for future work.
+
+\section{Methodology}
+
+\subsection{Classroom Student Behaviors Dataset}
+
+We use the two Classroom Student Behaviors datasets on Kaggle~\cite{csb,csb2}. Each image is a crop of a single student performing one of seven behaviors: \textit{sleeping, standing, raising hand, looking forward, reading, turning around}, or \textit{writing}. Files are organized in nested folders by behavior, identity, and recording sequence. We traverse the directory tree and treat every (behavior, person, sequence) triple as a \textit{group}, collecting all PNG frames in that group along with metadata. After removing corrupted frames we obtain more than 600k images. The \textit{Standing} class is rare and visually ambiguous, so we drop it and train on the remaining six behaviors.
+
+\subsection{Sequence-Level Reformulation}
+
+Because many behaviors are only distinguishable with temporal context, we reformulate the task as sequence-level classification. For each group we sort frame paths in natural order and regard the ordered list as a sequence. During training and evaluation we sample a fixed-length clip of $L=8$ frames from each sequence: random contiguous windows during training and uniformly spaced frames during evaluation. Given frames $(x_1,\dots,x_L)$ we learn a function $f$ that outputs a single behavior label $\hat{y}=f(x_1,\dots,x_L)$.
+
+\subsection{Train--Validation--Test Splits}
+
+To prevent identity leakage, we split the dataset by student ID using GroupShuffleSplit. We first split into train+validation and test, and then split train+validation again into train and validation. No student appears in more than one split. We compute sequence counts per class and derive inverse-frequency class weights, which later drive both sampling probabilities and the loss function.
+
+\subsection{Clip Construction and Data Augmentation}
+
+A custom \texttt{SequenceDataset} stores the ordered list of frame paths and a class label for each sequence. Short sequences are padded by repeating the last frame until reaching $L$ frames. For training we apply a standard set of strong augmentations. Table~\ref{tab:augmentations} summarizes each step in the pipeline and its intended effect.
+
+\begin{table}[t]
+\centering
+\caption{Summary of the main image transformations used in the training pipeline.}
+\label{tab:augmentations}
+\begin{tabular}{ll}
+\hline
+\textbf{Transform} & \textbf{Purpose} \\
+\hline
+RandomResizedCrop   & Vary scale and crop location \\
+RandomHorizontalFlip & Mirror left/right poses \\
+RandomRotation      & Small viewpoint perturbations \\
+ColorJitter         & Vary brightness/contrast/colors \\
+RandomGrayscale     & Robustness to low color info \\
+GaussianBlur        & Simulate motion / focus blur \\
+Normalize           & Standardize RGB channels \\
+RandomErasing       & Simulate occlusions and noise \\
+\hline
+\end{tabular}
+\end{table}
+
+For evaluation we use two pipelines: a clean center-crop view and a ``deployment-like'' view that uses a looser resize/crop plus blur and mild color jitter to mimic webcam video. Figure~\ref{fig:preproc} shows an example frame as it passes through the successive stages of the training pipeline.
+
+\begin{figure}[t]
+\centering
+% 3x3 grid de ejemplos, ajusta los nombres de archivo según tus salidas
+\includegraphics[height=0.3\linewidth]{preproc_step_01_original.png}
+\includegraphics[width=0.3\linewidth]{preproc_step_02_randomresizedcrop.png}
+\includegraphics[width=0.3\linewidth]{preproc_step_03_randomhorizontalflip.png}\\[2pt]
+\includegraphics[width=0.3\linewidth]{preproc_step_04_randomrotation.png}
+\includegraphics[width=0.3\linewidth]{preproc_step_05_colorjitter.png}
+\includegraphics[width=0.3\linewidth]{preproc_step_06_randomgrayscale.png}\\[2pt]
+\includegraphics[width=0.3\linewidth]{preproc_step_07_gaussianblur.png}
+\includegraphics[width=0.3\linewidth]{preproc_step_08_normalize.png}
+\includegraphics[width=0.3\linewidth]{preproc_step_09_randomerasing.png}
+\caption{Example of the training-time preprocessing pipeline applied to a single frame, from left to right and top to bottom: original image, RandomResizedCrop, RandomHorizontalFlip, RandomRotation, ColorJitter, RandomGrayscale, GaussianBlur, Normalize (visualized after un-normalization), and RandomErasing.}
+\label{fig:preproc}
+\end{figure}
+
+\subsection{Temporal ConvNeXt Architecture}
+
+Our backbone is \texttt{convnext\_small.fb\_in22k\_ft\_in1k} from the timm library, used as a per-frame feature extractor. Given a batch of clips of shape $(B,L,C,H,W)$ we reshape to $(B\!\cdot\!L,C,H,W)$, pass each frame through ConvNeXt, and obtain per-frame embeddings of dimension $D$. We then reshape to $(B,D,L)$ and feed the sequence into a temporal block of two 1D convolutions with ReLU:
+\begin{equation}
+h = \mathrm{Conv1D}_2(\mathrm{ReLU}(\mathrm{Conv1D}_1(z))).
+\end{equation}
+We average over time to get a clip-level vector $v\in\mathbb{R}^D$, and apply a classification head with layer normalization, dropout, and a fully connected layer to produce logits for the six classes.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{diagram_arch.png}
+\caption{Overview of the proposed temporal ConvNeXt architecture. Each frame in the input clip is processed by a ConvNeXt backbone to produce per-frame embeddings, which are then passed through a temporal 1D convolution block, averaged over time, and fed into a classifier to predict one of six classroom behaviors.}
+\label{fig:arch}
+\end{figure}
+
+
+\subsection{Class-Imbalance-Aware Training}
+
+Class frequencies are highly skewed, with \textit{reading} dominating the dataset. We compute normalized inverse-frequency weights and (i) use them in a \textit{WeightedRandomSampler} that oversamples rare classes such as \textit{Writing}, and (ii) apply the same weights in the cross-entropy loss. For particularly important minority classes we add a small extra bonus factor to the sampling weight.
+
+\subsection{Mixup, Local CutMix, and Loss Function}
+
+To improve generalization we use Mixup at the clip level (from timm) and a localized CutMix variant for \textit{reading} and \textit{writing}. For eligible clips we occasionally cut a rectangular patch in the lower part of the frame (hands and desk) and replace it with the corresponding patch from another clip, adjusting the label proportionally to the patch area. Whenever Mixup or local CutMix is applied, we build soft targets as convex combinations of one-hot labels and compute a class-weighted cross-entropy loss; otherwise we use standard class-weighted cross-entropy.
+
+Figure~\ref{fig:mixup-cutmix} illustrates Mixup and local CutMix on pairs of reading/writing examples.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.24\linewidth]{a.png}
+\includegraphics[width=0.24\linewidth]{b.png}
+\includegraphics[width=0.24\linewidth]{c.png}
+\includegraphics[width=0.24\linewidth]{d.png}\\[2pt]
+\includegraphics[width=0.24\linewidth]{1.png}
+\includegraphics[width=0.24\linewidth]{2.png}
+\includegraphics[width=0.24\linewidth]{3.png}
+\includegraphics[width=0.24\linewidth]{4.png}
+\caption{Visualization of MixUp (top row) and local CutMix (bottom row) on reading / turning-around frames. 
+The first column shows the two original images; the remaining columns show examples with different mixing
+coefficients~$\lambda$.}
+\label{fig:mixup-cutmix}
+\end{figure}
+
+When Mixup or CutMix is active, we compute a class-weighted cross-entropy between logits and soft targets. When no mixing is used, we revert to standard class-weighted cross-entropy.
+
+\subsection{Optimization and Training Setup}
+
+We train with AdamW and a OneCycle learning rate schedule for up to 10 epochs, using early stopping based on deployment-style validation accuracy. Training uses a batch size of 16 clips, gradient clipping, and automatic mixed precision (AMP). After each epoch we evaluate on both clean and deployment-style validation sets and save the checkpoint that performs best on the deployment view.
+
+\section{Experiments}
+
+\subsection{Experimental Setup}
+
+We instantiate sequence-level datasets using the splitting strategy described in Section~III. The final splits contain 2{,}990 sequences for training, 506 for validation, and 1{,}410 for testing. This corresponds to 394{,}193, 52{,}151, and 154{,}185 frames respectively. A summary is given in Table~\ref{tab:dataset}.
+
+\begin{table}[t]
+\centering
+\caption{Sequence-level dataset statistics after merging the two Classroom Student Behaviors datasets and removing the \textit{Standing} class.}
+\label{tab:dataset}
+\begin{tabular}{lcc}
+\hline
+\textbf{Split} & \textbf{\# Sequences} & \textbf{\# Frames} \\
+\hline
+Train      & 2{,}990 & 394{,}193 \\
+Validation & 506     & 52{,}151  \\
+Test       & 1{,}410 & 154{,}185 \\
+\hline
+\end{tabular}
+\end{table}
+
+During training we draw sequences with the weighted sampler and use deterministic uniform frame sampling at evaluation time. We report accuracy and macro-averaged precision, recall, and F1-score, as well as per-class metrics.
+
+\subsection{Validation Performance}
+
+Across 10 epochs the model improves steadily on both validation views. The best deployment-style validation accuracy reaches about 99.5\%, while clean validation accuracy is around 98.6\%. Early stopping on deployment accuracy avoids overfitting and encourages models that generalize to webcam-like inputs.
+
+Figure~\ref{fig:training-curves} illustrates the training dynamics: training accuracy increases smoothly across epochs, while validation accuracy on both the clean and deployment-style views saturates quickly and remains high. The final checkpoint is selected from epoch~7 based on the deployment-style validation accuracy.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{training_curves.pdf}
+\caption{Training and validation accuracy per epoch. We plot training accuracy (\textit{Train}), validation accuracy on the clean view (\textit{Val-clean}), and validation accuracy on the deployment-style view (\textit{Val-deploy}).}
+\label{fig:training-curves}
+\end{figure}
+
+\subsection{Test Performance}
+
+We evaluate the best checkpoint on the held-out test set with the standard evaluation pipeline. Overall accuracy is 96\% on 1{,}410 test sequences. Macro-averaged precision, recall, and F1-score are all about 0.96. Per-class results are summarized in Table~\ref{tab:test-metrics}.
+
+\begin{table}[t]
+\centering
+\caption{Per-class performance of the proposed Temporal ConvNeXt model on the held-out test set (sequence level).}
+\label{tab:test-metrics}
+\begin{tabular}{lcccc}
+\hline
+\textbf{Class} & \textbf{Prec.} & \textbf{Rec.} & \textbf{F1} & \textbf{Support} \\
+\hline
+Looking Forward & 0.99 & 1.00 & 0.99 & 162 \\
+Raising Hand    & 0.96 & 1.00 & 0.98 & 97  \\
+Reading         & 1.00 & 0.94 & 0.97 & 645 \\
+Sleeping        & 0.99 & 0.95 & 0.97 & 184 \\
+Turning Around  & 0.99 & 0.99 & 0.99 & 221 \\
+Writing         & 0.72 & 1.00 & 0.84 & 101 \\
+\hline
+\textbf{Accuracy}     &      &      & 0.96 & 1{,}410 \\
+\textbf{Macro avg}    & 0.94 & 0.98 & 0.96 & 1{,}410 \\
+\textbf{Weighted avg} & 0.97 & 0.96 & 0.97 & 1{,}410 \\
+\hline
+\end{tabular}
+\end{table}
+
+Figure~\ref{tab:confusion} reports the confusion matrix. Most errors occur between \textit{reading} and \textit{writing}, reflecting their visual similarity. Writing has perfect recall but lower precision, meaning the model sometimes predicts \textit{writing} when the ground truth is \textit{reading}; confusion between other classes is minimal.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{confusion_matrix.png}%
+\caption{Confusion matrix of the proposed model on the held-out test set. Rows correspond to ground-truth classes and columns to predicted classes.}
+\label{tab:confusion}
+\end{figure}
+
+\subsection{Discussion}
+
+The results show that sequence-level modeling with a temporal ConvNeXt backbone gives robust classroom behavior recognition from short clips. The model remains compact while handling temporal information, and deployment-style validation helps ensure robustness to real camera conditions. Limitations include the single-student setting, the focus on RGB only, and the assumption of mutually exclusive behaviors. Extending to multi-student scenes, combining pose features, and modeling overlapping behaviors are natural next steps.
+
+\section{Conclusion}
+
+We presented a temporal ConvNeXt-based system for real-time recognition of individual student behaviors in classrooms. By merging two Classroom Student Behaviors datasets and reformulating the task as sequence-level classification with person-disjoint splits, we obtained a large clip dataset on which our model attains 96\% accuracy and a macro-averaged F1 score of 0.96. Key components include a ConvNeXt backbone, a lightweight temporal 1D convolutional block, class-imbalance-aware sampling and loss, strong augmentation, and a webcam-style validation pipeline.
+
+The predicted behavior labels can be aggregated to build per-student attention curves, offering a building block for classroom analytics tools. Future work could explore integrating pose-based features, handling multi-student scenes with detection and tracking, and working with education researchers to define and evaluate meaningful engagement indicators.
+
+These results indicate that our initial objective has largely been achieved on the evaluated datasets.
+
+\section{Contribution}
+\textbf{Catherine Tao (9\%)} looked for extra datasets, researched papers for ideas on how to implement our project  preprocessed data (did not end up using it), tried lightweight models using Ryosei’s code and presented final presentation.
+
+\textbf{Emma Prufer (10\%)} read papers about different approaches of image recognition, tried to preprocess data (did not end up using it), experimented ways to make Ryosei’s code lighter, made final presentations slides.
+
+\textbf{Gladys Valerie (20\%)} managed documents, communication and proposal; researched and coded prototypes (RNN, LSTM, CNN-RNN, PGCN). Found datasets, and created demo’s presentation and confusion matrix.
+
+\textbf{Kelvin Claudio (19\%)} datasets preparation for training, training temporal model GRU (Gated Recurrent Unit, didn’t end up using), YOLO multiple people detection, frontend interface implementation and design.
+
+\textbf{Laura Shion (19\%)} conducted initial literature review on past works to understand how similar projects have been approached to guide our design choices; investigated and prototyped input processing approaches, implemented model's user-facing interface/front-end, wrote this report.
+
+\textbf{Ryosei Inagaki (23\%)} lead coder: prototyped initial CNN model (the one we ended up using) and implemented some modifications that came later, continued to improve it, and its final stage is our project. Modified the interface
+
+\begin{thebibliography}{00}
+
+\bibitem{liu2025classroomreview}
+X.~Liu, Y.~Chen, and H.~Zhang, ``A survey on classroom behavior recognition using computer vision,'' 
+\emph{IEEE Transactions on Learning Technologies}, 2025.
+
+\bibitem{csb}
+P.~L.~Huynh Mai, ``Classroom student behaviors,'' Kaggle, 2022. [Online].
+Available: \url{https://www.kaggle.com/datasets/phamluhuynhmai/classroom-student-behaviors}
+
+\bibitem{csb2}
+P.~L.~Huynh Mai, ``Classroom student behaviors version 2,'' Kaggle, 2022. [Online].
+Available: \url{https://www.kaggle.com/datasets/phamluhuynhmai/classroom-student-behaviors-version-2}
+
+\bibitem{wang2023yolov5classroom}
+J.~Wang, Q.~Li, and M.~Sun, ``Classroom student behavior recognition based on {YOLOv5},'' 
+in \emph{Proc. Int. Conf. on Smart Education Systems}, 2023.
+
+\bibitem{zheng2022attention}
+L.~Zheng, P.~Huang, and K.~Zhao, ``Student attention assessment from classroom behavior sequences,'' 
+\emph{Int. J. of Educational Technology in Higher Education}, vol.~19, no.~4, pp.~1--15, 2022.
+
+\end{thebibliography}
+
+\end{document}
